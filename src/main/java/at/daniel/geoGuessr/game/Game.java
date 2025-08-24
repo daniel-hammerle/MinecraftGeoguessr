@@ -3,13 +3,14 @@ package at.daniel.geoGuessr.game;
 import at.daniel.flow.Ctx;
 import at.daniel.flow.EventHandle;
 import at.daniel.flow.Filter;
+import at.daniel.flow.Flow;
 import at.daniel.geoGuessr.GeoGuessr;
 import at.daniel.geoGuessr.GeoGuessrMap;
 import at.daniel.geoGuessr.Vec2D;
 import at.daniel.geoGuessr.editor.Item;
 import at.daniel.geoGuessr.projection.Projection;
 import io.papermc.paper.entity.TeleportFlag;
-import org.apache.commons.lang3.NotImplementedException;
+import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -28,51 +29,105 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
 import java.util.stream.Stream;
 
-public class Game {
+public class Game implements Flow.Entry<GeoGuessr, Void, GameSpecifications> {
 
+    private static final int MaxPointsPerRound = 5000;
+    private static final int InfiniteEffectDuration = 1000000;
+    private static final int NoWinningPlayer = -1;
+    private static final float PitchStraightDown = 90f;
 
-    public static void playGame(Ctx<GeoGuessr> ctx, Player[] players, GeoGuessrMap map, Settings settings) {
-        Player[] allPlayers = Stream.concat(Arrays.stream(players), Stream.of(ctx.player()))
-                .toArray(Player[]::new);
+    private Player[] allPlayers;
+    private int[] points;
+    private GeoGuessrMap map;
+    private Settings settings;
+    private Ctx<GeoGuessr> ctx;
 
-        Projection proj = ctx.sync(() -> ctx.plugin().getProjectionManager().getProjection(map, allPlayers.length));
+    @Override
+    public Void run(Ctx<GeoGuessr> ctx, GameSpecifications gameSpecifications) {
+        Stream<Player> otherPlayersStream = Arrays.stream(gameSpecifications.players());
+        Stream<Player> hostStream = Stream.of(ctx.player());
 
-        World world = Bukkit.getWorld(map.getWorldId());
+        allPlayers = Stream.concat(hostStream, otherPlayersStream).toArray(Player[]::new);
+        points = new int[allPlayers.length];
+        map = gameSpecifications.map();
+        settings = gameSpecifications.settings();
+        this.ctx = ctx;
+
+        playGame();
+        return null;
+    }
+
+    private void playGame() {
+        // Prepare projection and world
+        Projection projection = ctx.sync(() -> ctx.plugin().getProjectionManager().getProjection(map, allPlayers.length));
+
+        @Nullable World world = Bukkit.getWorld(map.getWorldId());
         if (world == null) {
             ctx.player().sendMessage("Map does not exist!");
             return;
         }
+
+        //prepare mapSize constant
+        Vec2D start = map.getStart();
+        Vec2D end = map.getEnd();
+        int mapSize = Math.max(end.x() - start.x(), end.y() - start.y());
+
         Random random = new Random();
 
-        for(;;) {
+        //game loop
+        int winningPlayer = NoWinningPlayer;
+        while(winningPlayer == NoWinningPlayer) {
             //Find a random location to guess
             Vector location = map.randomPoint(random);
-
-            Map<Player, Vector> distances = HashMap.newHashMap(allPlayers.length);
-
-            Location loc = new Location(world, location.getX(), location.getY(), location.getZ());
-            ctx.nonBlocking(() -> {
-                for(Player player : allPlayers) {
-                    player.teleport(loc, PlayerTeleportEvent.TeleportCause.UNKNOWN, TeleportFlag.EntityState.RETAIN_VEHICLE);
-                    player.addPotionEffect(new PotionEffect(PotionEffectType.INVISIBILITY, 100000, 1, true, false, false));
-                }
-            });
-
+            setupPlayersForRound(location, world);
             //launch handler for each player
-            var guesses = mapIndexed(
-                    Arrays.stream(players),
-                    (i, player) -> ctx.launchForPlayer(player, context -> findGuess(context, map, proj, i)))
-                    .map(CompletableFuture::join)
-                    .toArray(Vector[]::new);
+            Vector[] guesses = makeGuesses(projection);
 
+            int[] roundPoints = calculatePoints(guesses, location, mapSize);
 
-            //display finish screen
-            //for this we need to find an apropriate projection level
+            for (int i = 0; i < roundPoints.length; i++) {
+                points[i] += roundPoints[i];
+            }
 
+            winningPlayer = getWinningPlayer();
         }
+
     }
 
-    static Vector findGuess(Ctx<GeoGuessr> ctx, GeoGuessrMap map, Projection proj, int playerIdx) {
+    private void setupPlayersForRound(Vector location, World world) {
+        Location locationObject = new Location(world, location.getX(), location.getY(), location.getZ());
+
+        PotionEffectType effectType = PotionEffectType.INVISIBILITY;
+        int amplifier = 1;
+        boolean ambient = true;
+        boolean showParticles = false;
+        boolean showIcon = false;
+        PotionEffect effect = new PotionEffect(effectType, InfiniteEffectDuration, amplifier, ambient, showParticles, showIcon);
+
+        ctx.nonBlocking(() -> {
+            for(Player player : allPlayers) {
+                player.teleport(locationObject, PlayerTeleportEvent.TeleportCause.UNKNOWN, TeleportFlag.EntityState.RETAIN_VEHICLE);
+                player.addPotionEffect(effect);
+            }
+        });
+    }
+
+    private Vector[] makeGuesses(Projection projection) {
+        return mapIndexed(
+                Arrays.stream(allPlayers),
+                (i, player) -> ctx.launchForPlayer(player, context -> findGuess(context, projection, i)))
+                .map(CompletableFuture::join)
+                .toArray(Vector[]::new);
+    }
+
+    private int[] calculatePoints(Vector[] guesses, Vector location, int mapSize) {
+        return Arrays.stream(guesses)
+                .map(guess -> guess.distance(location))
+                .mapToInt(distance -> MaxPointsPerRound - (int) (distance / mapSize))
+                .toArray();
+    }
+
+    private Vector findGuess(Ctx<GeoGuessr> ctx, Projection proj, int playerIdx) {
         var inv = ctx.player().getInventory();
 
         try (var handler = ctx.subscribe(PlayerInteractEvent.class, Filter.isPlayer(ctx.player()))) {
@@ -83,16 +138,26 @@ public class Game {
                     }
                 });
 
-                var _ = handler.awaitEvent();
+                var ignoreEvent = handler.awaitEvent();
                 handler.pause();
-                var point = makeGuess(ctx, map, proj, playerIdx);
+                var point = makeGuess(ctx, proj, playerIdx);
                 handler.resume();
                 if (point != null) return point;
             }
         }
     }
 
-    static class ProjectionHandle {
+    private int getWinningPlayer() {
+        for (int i = 0; i < points.length; i++) {
+            if (points[i] >= settings.winningPoints()) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+
+    private static class ProjectionHandle {
         private final int[] scales;
         private double scaleFactor;
         private final int layerHeight;
@@ -138,34 +203,35 @@ public class Game {
         }
 
 	}
-
-    static @Nullable Vector makeGuess(Ctx<GeoGuessr> ctx, GeoGuessrMap map, Projection proj, int playerIdx) {
+    private @Nullable Vector makeGuess(Ctx<GeoGuessr> ctx, Projection projection, int playerIdx) {
         ctx.sync(() -> {
             var inv = ctx.player().getInventory();
             inv.clear();
             inv.setItem(0, Item.ConfirmationPane);
             inv.setItem(1, Item.ExitItem);
+            ctx.player().setAllowFlight(true);
             ctx.player().setFlying(true);
         });
 
         var initLocation = ctx.sync(() -> ctx.player().getLocation());
-        var cleanLocation = Vec2D.fromLocation(initLocation).minus(map.getStart());
 
-        var offsetX = proj.lenX() * playerIdx;
-        var offsetY = proj.lenY() * playerIdx;
+        int offsetX = projection.lenX() * playerIdx;
+        int offsetY = projection.lenY() * playerIdx;
 
-        var currentLocation =new Location(
-                proj.world(),
-                cleanLocation.x() + offsetX,
-                proj.mapHeight(),
-                cleanLocation.y() + offsetY,
-                0f,
-                90f
+        float yaw = 0f;
+
+        var currentLocation = new Location(
+                projection.world(),
+                (double) projection.lenX() / 2 + offsetX,
+                projection.mapHeight(),
+                (double) projection.lenY() / 2  + offsetY,
+                yaw,
+                PitchStraightDown
         );
 
-		ctx.nonBlocking(() -> ctx.player().teleport(currentLocation));
+		ctx.sync(() -> ctx.player().teleport(currentLocation));
 
-        var projectionHandle = new ProjectionHandle(proj);
+        var projectionHandle = new ProjectionHandle(projection);
 
         try(var handler = EventHandle.join(
                 ctx.subscribe(PlayerMoveEvent.class, Filter.isPlayer(ctx.player())),
@@ -183,6 +249,7 @@ public class Game {
                         ctx.nonBlocking(() -> {
                             ctx.player().teleport(initLocation);
                             ctx.player().setFlying(false);
+                            ctx.player().setAllowFlight(false);
                         });
                         return currentLocation.toVector();
                     }
@@ -190,6 +257,7 @@ public class Game {
                         ctx.nonBlocking(() -> {
                             ctx.player().teleport(initLocation);
                             ctx.player().setFlying(false);
+                            ctx.player().setAllowFlight(false);
                         });
                         return null;
                     }
@@ -200,15 +268,20 @@ public class Game {
         }
     }
 
-    static void handleMoveEvent(Ctx<GeoGuessr> ctx, PlayerMoveEvent moveEvent, ProjectionHandle handle) {
+    private void handleMoveEvent(Ctx<GeoGuessr> ctx, PlayerMoveEvent moveEvent, ProjectionHandle handle) {
         var currentLocation = moveEvent.getTo();
 
         int change = handle.getRequiredLayerShift(currentLocation.y());
-
+        ctx.player().sendMessage(Component.text(change));
         if (change == 0) return;
+
         double scaleFactor = handle.scaleFactor();
         if (change == -1) {
-            if (!handle.moveDown()) return;
+            if (!handle.moveDown()) {
+                ctx.player().sendMessage("Could not move down...");
+                return;
+            }
+            ctx.player().sendMessage("moving down");
             currentLocation = currentLocation.multiply(scaleFactor);
         }
         if (change == 1) {

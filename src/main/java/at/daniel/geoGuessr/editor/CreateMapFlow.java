@@ -64,6 +64,8 @@ public class CreateMapFlow {
                 firstMarker.getBlockZ()
         );
 
+
+
         //Now we place the confirmation item
         ctx.sync(() -> {
             player.getInventory().setItem(0, Item.ConfirmationPane);

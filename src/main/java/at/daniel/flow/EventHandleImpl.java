@@ -8,6 +8,7 @@ import java.util.LinkedList;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class EventHandleImpl<E extends Event> implements EventHandle<E>, Listener, EventHandleFuture<E> {
 
@@ -17,7 +18,7 @@ public class EventHandleImpl<E extends Event> implements EventHandle<E>, Listene
     private boolean notified = false;
     private boolean paused = false;
     private final Queue<AsyncRequest> asyncRequests = new LinkedList<>();
-
+    private final AtomicBoolean isKilled;
     class AsyncRequest {
         private final State state;
         private final CompletableFuture<E> completion;
@@ -36,13 +37,19 @@ public class EventHandleImpl<E extends Event> implements EventHandle<E>, Listene
         }
     }
 
-    public EventHandleImpl(Class<E> clazz, Ctx<?> ctx, boolean cancel) {
+    public EventHandleImpl(Class<E> clazz, Ctx<?> ctx, boolean cancel, AtomicBoolean isKilled) {
         this.ctx = ctx;
         this.cancel = cancel;
-
+        this.isKilled = isKilled;
         ctx.nonBlocking(() ->
                 Bukkit.getPluginManager().registerEvent(clazz, this, EventPriority.NORMAL, this::handleEvent, ctx.plugin())
         );
+    }
+
+    private void checkKilled() {
+        if (isKilled.get()) {
+            throw new DeathException();
+        }
     }
 
 
@@ -74,6 +81,7 @@ public class EventHandleImpl<E extends Event> implements EventHandle<E>, Listene
 
     @Override
     public E awaitEvent() {
+        checkKilled();
         synchronized (this) {
             if (!events.isEmpty()) {
                 return events.remove();
@@ -94,6 +102,7 @@ public class EventHandleImpl<E extends Event> implements EventHandle<E>, Listene
 
     @Override
     public E awaitEvent(Duration duration) throws TimeoutException {
+        checkKilled();
         synchronized (this) {
             if (!events.isEmpty()) {
                 return events.remove();
@@ -117,6 +126,7 @@ public class EventHandleImpl<E extends Event> implements EventHandle<E>, Listene
 
     @Override
     public void pause() {
+        checkKilled();
         synchronized (this) {
             paused = true;
         }
@@ -124,6 +134,7 @@ public class EventHandleImpl<E extends Event> implements EventHandle<E>, Listene
 
     @Override
     public void resume() {
+        checkKilled();
         synchronized (this) {
             paused = false;
         }

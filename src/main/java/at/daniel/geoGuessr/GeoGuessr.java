@@ -1,7 +1,6 @@
 package at.daniel.geoGuessr;
 
 import at.daniel.flow.Flow;
-import at.daniel.flow.VoidFlow;
 import at.daniel.flow.util.PlayerUtil;
 import at.daniel.geoGuessr.commands.GeoGuessrCommand;
 import at.daniel.geoGuessr.commands.ProjectCommand;
@@ -9,6 +8,8 @@ import at.daniel.geoGuessr.commands.TravelCommand;
 import at.daniel.geoGuessr.editor.CreateMapFlow;
 import at.daniel.geoGuessr.editor.EditMapFlow;
 import at.daniel.geoGuessr.editor.LocationObject;
+import at.daniel.geoGuessr.game.Game;
+import at.daniel.geoGuessr.game.GameSpecifications;
 import at.daniel.geoGuessr.maps.MapManager;
 import at.daniel.geoGuessr.projection.ProjectionManager;
 import com.google.gson.Gson;
@@ -30,17 +31,19 @@ public final class GeoGuessr extends JavaPlugin {
 
     private final Flow.Application<GeoGuessr, LocationObject, Void> createMapFlow = Flow.create(
             this,
-            (ctx, ignoreProps) -> PlayerUtil.preserveInventory(ctx, CreateMapFlow::createMapFlow)
+            () -> (ctx, ignoreProps) -> PlayerUtil.preserveInventory(ctx, CreateMapFlow::createMapFlow)
     );
 
     private final Flow.Application<GeoGuessr, Void, GeoGuessrMap> editMapFlow = Flow.create(
             this,
-            (ctx, map) ->
+            () -> (ctx, map) ->
                 PlayerUtil.preserveInventory(ctx,  c -> {
                     EditMapFlow.editMap(ctx, map);
                     return null;
                 })
     );
+
+    private final Flow.Application<GeoGuessr, Void, GameSpecifications> gameFlow = Flow.create(this, Game::new);
 
     private MapManager mapManager;
     private ProjectionManager projectionManager;
@@ -50,6 +53,7 @@ public final class GeoGuessr extends JavaPlugin {
         try {
             GeoGuessrMap[] maps = loadResources();
             mapManager = new MapManager(maps);
+            getLogger().log(Level.INFO, "loaded "+maps.length + " maps!");
         } catch (IOException e) {
             panic("Failed to create or access necessary directories");
             return;
@@ -85,6 +89,8 @@ public final class GeoGuessr extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        gameFlow.cancelAll();
+
         try {
             storeResources();
         } catch (IOException e) {
@@ -98,7 +104,7 @@ public final class GeoGuessr extends JavaPlugin {
         Bukkit.getPluginManager().disablePlugin(this);
     }
 
-    GeoGuessrMap[] loadResources() throws IOException {
+    private GeoGuessrMap[] loadResources() throws IOException {
         //create plugin dir if it doesn't exist
         if (!Files.isDirectory(PluginPath)) {
             Files.createDirectory(PluginPath);
@@ -112,7 +118,7 @@ public final class GeoGuessr extends JavaPlugin {
         //parse all geoguessr maps
         try (Stream<Path> stream = Files.list(MapsPath)) {
             return stream
-                    .filter(it -> it.getFileName().endsWith(".json"))
+                    .filter(it -> it.getFileName().toString().endsWith(".json"))
                     .map(it -> {
                         try {
                             return gson.fromJson(Files.readString(it), GeoGuessrMap.class);
@@ -125,10 +131,10 @@ public final class GeoGuessr extends JavaPlugin {
 
     }
 
-    void storeResources() throws IOException {
+    private void storeResources() throws IOException {
         for (GeoGuessrMap map : mapManager.getMaps()) {
             String json = gson.toJson(map);
-            Files.writeString(MapsPath.resolve(map.getName()), json);
+            Files.writeString(MapsPath.resolve(map.getName() + ".json"), json);
         }
     }
 
@@ -146,5 +152,9 @@ public final class GeoGuessr extends JavaPlugin {
 
     public ProjectionManager getProjectionManager() {
         return projectionManager;
+    }
+
+    public Flow.Application<GeoGuessr, Void, GameSpecifications> getGameFlow() {
+        return gameFlow;
     }
 }

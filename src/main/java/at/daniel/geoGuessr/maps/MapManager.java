@@ -1,7 +1,6 @@
 package at.daniel.geoGuessr.maps;
 
 import at.daniel.geoGuessr.GeoGuessrMap;
-import at.daniel.geoGuessr.Road;
 import at.daniel.geoGuessr.Vec2D;
 import org.bukkit.World;
 
@@ -27,7 +26,9 @@ public class MapManager {
     }
 
     public void addMap(World world, Vec2D start, Vec2D end, String name) {
-        maps.add(new GeoGuessrMap(name, world.getUID(), start, end, new ArrayList<>(), new ArrayList<>()));
+        Vec2D actualStart = new Vec2D(Math.min(start.x(), end.x()), Math.min(start.y(), end.y()));
+        Vec2D actualEnd = new Vec2D(Math.max(start.x(), end.x()), Math.max(start.y(), end.y()));
+        maps.add(new GeoGuessrMap(name, world.getUID(), actualStart, actualEnd, new ArrayList<>(), new ArrayList<>()));
     }
 
     public boolean mapExists(String name) {

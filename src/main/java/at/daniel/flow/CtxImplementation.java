@@ -16,16 +16,23 @@ import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class CtxImplementation<P extends JavaPlugin> implements Ctx<P> {
 
     private final P plugin;
     private final Player player;
-    private final Queue<Event> events = new LinkedList<>();
+    private AtomicBoolean isKilled = new AtomicBoolean(false);
 
     public CtxImplementation(P plugin, Player player) {
         this.plugin = plugin;
         this.player = player;
+    }
+
+    private void checkKilled() {
+        if (isKilled.get()) {
+            throw new DeathException();
+        }
     }
 
     @Override
@@ -40,10 +47,10 @@ public class CtxImplementation<P extends JavaPlugin> implements Ctx<P> {
 
     @Override
     public <T> @NotNull T sync(@NotNull Factory<T> task) {
+        checkKilled();
         if (Bukkit.isPrimaryThread()) {
             return task.run();
         }
-
         CompletableFuture<T> future = new CompletableFuture<>();
         Bukkit.getScheduler().runTask(plugin, () -> future.complete(task.run()));
 
@@ -56,6 +63,7 @@ public class CtxImplementation<P extends JavaPlugin> implements Ctx<P> {
 
     @Override
     public @NotNull <T> CompletableFuture<T> nonBlocking(@NotNull Factory<T> task) {
+        checkKilled();
         CompletableFuture<T> future = new CompletableFuture<>();
         Bukkit.getScheduler().runTask(plugin, () -> future.complete(task.run()));
         return future;
@@ -63,11 +71,13 @@ public class CtxImplementation<P extends JavaPlugin> implements Ctx<P> {
 
     @Override
     public void nonBlocking(@NotNull Runnable task) {
+        checkKilled();
         Bukkit.getScheduler().runTask(plugin, task);
     }
 
     @Override
     public void sync(@NotNull Runnable task) {
+        checkKilled();
         if (Bukkit.isPrimaryThread()) {
             task.run();
             return;
@@ -88,15 +98,18 @@ public class CtxImplementation<P extends JavaPlugin> implements Ctx<P> {
 
     @Override
     public <E extends Event> EventHandle<E> subscribe(@NotNull Class<E> event, @NotNull Filter<E> filter, boolean cancel) {
-        return new EventHandleImpl<>(event, this, cancel);
+        checkKilled();
+        return new EventHandleImpl<>(event, this, cancel, isKilled);
     }
 
     @Override
     public <R> CompletableFuture<R> launchForPlayer(Player player, Flow<P, R> flow) {
-        var future = new CompletableFuture<R>();
+        checkKilled();
         var newCtx = new CtxImplementation<>(plugin, player);
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> future.complete(flow.run(newCtx)));
-        return future;
+        return CompletableFuture.supplyAsync(() -> flow.run(newCtx));
     }
 
+    public void setKilled(boolean killed) {
+        isKilled.set(killed);
+    }
 }

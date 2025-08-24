@@ -27,14 +27,14 @@ public interface Filter<E extends Event> {
      * Accepts all events.
      */
     static <E extends Event> Filter<E> allow() {
-        return _ -> true;
+        return ignoreEvent -> true;
     }
 
     /**
      * Rejects all events.
      */
     static <E extends Event> Filter<E> deny() {
-        return _ -> false;
+        return ignoreEvent -> false;
     }
 
     /**

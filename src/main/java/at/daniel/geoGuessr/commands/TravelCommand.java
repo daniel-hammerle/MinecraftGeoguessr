@@ -39,7 +39,7 @@ public class TravelCommand implements CommandExecutor {
 
     private Flow.Application<GeoGuessr, Void, Void> getFlowApp(GeoGuessr plugin) {
         if (this.app == null) {
-            this.app = Flow.create(plugin, (ctx, ignore) -> {
+            this.app = Flow.create(plugin, () -> (ctx, ignore) -> {
                 TravelCommand.transportPlayer(ctx);
                 return null;
             });

@@ -70,7 +70,7 @@ public class CreateCoverageFlow {
             }
         });
 
-        try (var handle = ctx.subscribe(PlayerInteractEvent.class, Filter.isPlayer(ctx.player()))) {
+        try (var handle = ctx.subscribe(PlayerInteractEvent.class, Filter.isPlayer(ctx.player()), true)) {
             for(;;) {
                 PlayerInteractEvent event = handle.awaitEvent();
                 ItemStack item = event.getItem();
@@ -85,8 +85,6 @@ public class CreateCoverageFlow {
                 return type.get();
             }
         }
-
-
     }
 
     public record Selection(String name, ItemType type) {}
